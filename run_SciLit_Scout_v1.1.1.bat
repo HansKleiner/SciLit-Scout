@@ -1,10 +1,10 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title SciLit Scout v1.1.1
+title SciLit Scout
 
 echo ==========================================
-echo   SciLit Scout v1.1.1
+echo   SciLit Scout
 echo ==========================================
 echo.
 
@@ -13,35 +13,25 @@ if not exist ".venv\Scripts\python.exe" (
     py -3.14 -m venv .venv
     if errorlevel 1 (
         echo.
-        echo ERROR: Python virtual environment creation failed.
-        echo Python was found, but venv/pip bootstrap may be incomplete.
-        echo Repair or reinstall Python 3.14 with pip and the standard library.
-        echo Then delete the incomplete .venv folder and run this file again.
+        echo ERROR: Could not create the Python 3.14 environment.
+        echo Install Python 3.14 with the Python Launcher and try again.
         pause
         exit /b 1
     )
 )
 
-".venv\Scripts\python.exe" -m pip --version >nul 2>&1
+echo Checking SciLit Scout environment...
+".venv\Scripts\python.exe" scripts\ensure_env.py
 if errorlevel 1 (
     echo.
-    echo ERROR: pip is missing from the virtual environment.
-    echo Delete the .venv folder, repair Python 3.14, and run this file again.
+    echo ERROR: Dependency setup failed.
+    echo Check your internet connection and try again.
     pause
     exit /b 1
 )
 
-".venv\Scripts\python.exe" -m pip show streamlit >nul 2>&1
-if errorlevel 1 (
-    echo Installing required packages. First launch may take several minutes...
-    ".venv\Scripts\python.exe" -m pip install --upgrade pip
-    if errorlevel 1 goto install_error
-    ".venv\Scripts\python.exe" -m pip install -r requirements.txt
-    if errorlevel 1 goto install_error
-)
-
 echo.
-echo Starting SciLit Scout v1.1.1...
+echo Starting SciLit Scout...
 echo Keep this window open while using the application.
 echo Press Ctrl+C here to stop.
 echo.
@@ -50,10 +40,3 @@ echo.
 echo SciLit Scout has stopped.
 pause
 exit /b 0
-
-:install_error
-echo.
-echo ERROR: Required package installation failed.
-echo Check your internet connection and try again.
-pause
-exit /b 1
