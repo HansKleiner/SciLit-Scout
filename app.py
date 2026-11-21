@@ -265,7 +265,7 @@ with tabs[8]:
         st.metric("Импортировано оценок ИИ", len(ai_frame))
         st.dataframe(ai_frame, use_container_width=True, hide_index=True)
         st.download_button("Скачать сводную таблицу ИИ (CSV)",
-                           ai_frame.to_csv(index=False, sep=";", lineterminator="\\n").encode("utf-8-sig"),
+                           ai_frame.to_csv(index=False, sep=";", lineterminator="\n").encode("utf-8-sig"),
                            file_name="scilit_scout_ai_results.csv", mime="text/csv")
     else:
         st.info("Результатов ИИ пока нет. После импорта они появятся здесь.")
