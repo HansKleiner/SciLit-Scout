@@ -5,7 +5,8 @@ from pathlib import Path
 from scilit_scout.core import (
     APP_VERSION, init_db, db, records, search_openalex, search_crossref,
     import_file_bytes, decide, set_category, set_full_text, latest_decision,
-    search_logs, export_excel, export_word, prisma_summary
+    search_logs, export_excel, export_word, prisma_summary,
+    export_ai_batches, import_ai_results, ai_screening_results
 )
 
 st.set_page_config(page_title=f"SciLit Scout v{APP_VERSION}", layout="wide")
@@ -13,7 +14,7 @@ init_db()
 st.title(f"SciLit Scout v{APP_VERSION}")
 st.caption("Систематический обзор дорожных энергетических установок · локальная SQLite · миграция v1.0 поддерживается")
 
-tabs = st.tabs(["Поиск и импорт", "Реестр", "Скрининг", "Полные тексты", "Патенты и диссертации", "Журнал поиска", "PRISMA", "Экспорт"])
+tabs = st.tabs(["Поиск и импорт", "Реестр", "Скрининг", "Полные тексты", "Патенты и диссертации", "Журнал поиска", "PRISMA", "Экспорт", "ИИ: экспорт и результаты"])
 
 with tabs[0]:
     st.subheader("OpenAlex API")
@@ -216,3 +217,55 @@ with tabs[7]:
         st.download_button("Скачать Word", st.session_state["word_bytes_v11"],
                            file_name="scilit_scout_report_v1.1.1.docx",
                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+
+with tabs[8]:
+    st.subheader("Универсальный обмен с ИИ")
+    st.markdown(
+        "Экспортируйте библиографические записи пакетами, обработайте CSV в выбранном ИИ "
+        "и загрузите полученные CSV обратно. SciLit Scout не отправляет ваши данные в ИИ автоматически."
+    )
+    st.warning(
+        "В CSV входят названия, авторы, DOI, аннотации и другие библиографические метаданные. "
+        "Перед загрузкой в онлайн-сервис проверьте его правила обработки данных."
+    )
+    st.markdown("**1. Экспорт пакетов для ИИ**")
+    batch_size = st.number_input("Записей в одном пакете", min_value=10, max_value=100, value=35, step=5)
+    if st.button("Подготовить ZIP с CSV и инструкцией", key="ai_export_zip"):
+        try:
+            archive, total, batches = export_ai_batches(int(batch_size))
+            st.session_state["ai_export_zip"] = archive
+            st.session_state["ai_export_info"] = (total, batches)
+        except Exception as exc:
+            st.error(f"Ошибка экспорта: {exc}")
+    if "ai_export_zip" in st.session_state:
+        total, batches = st.session_state["ai_export_info"]
+        st.success(f"Подготовлено записей: {total} · CSV-пакетов: {batches}")
+        st.download_button("Скачать ZIP для ИИ", st.session_state["ai_export_zip"],
+                           file_name="scilit_scout_ai_batches.zip", mime="application/zip")
+    st.caption("В ZIP находится инструкция для модели и отдельные CSV-файлы. Сначала загрузите инструкцию в ИИ, затем обрабатывайте CSV по одному.")
+    st.divider()
+    st.markdown("**2. Импорт результата ИИ**")
+    provider = st.text_input("Название ИИ или сервиса", placeholder="Например: ChatGPT, Gemini, Qwen")
+    run_label = st.text_input("Ярлык запуска", placeholder="Например: screening_2026_11_run1")
+    ai_file = st.file_uploader("CSV, возвращённый ИИ", type=["csv"], key="ai_result_upload")
+    if ai_file and st.button("Импортировать результат ИИ", key="ai_import_result"):
+        try:
+            total, inserted, updated = import_ai_results(ai_file.name, ai_file.getvalue(), provider, run_label)
+            st.success(f"Строк проверено: {total} · новых результатов: {inserted} · обновлено в этом запуске: {updated}")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Импорт не выполнен: {exc}")
+    st.caption("Импорт проверяет ID, повторяющиеся строки и допустимые значения. Он записывает только отдельные поля ИИ и не меняет экспертные решения, категории или статус полного текста.")
+    st.divider()
+    st.markdown("**3. Просмотр и сравнение результатов ИИ**")
+    ai_rows = ai_screening_results()
+    if ai_rows:
+        ai_frame = pd.DataFrame(ai_rows)
+        st.metric("Импортировано оценок ИИ", len(ai_frame))
+        st.dataframe(ai_frame, use_container_width=True, hide_index=True)
+        st.download_button("Скачать сводную таблицу ИИ (CSV)",
+                           ai_frame.to_csv(index=False, sep=";", lineterminator="\\n").encode("utf-8-sig"),
+                           file_name="scilit_scout_ai_results.csv", mime="text/csv")
+    else:
+        st.info("Результатов ИИ пока нет. После импорта они появятся здесь.")
