@@ -13,7 +13,7 @@ from typing import Iterable
 import pandas as pd
 import requests
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
 EXPORTS = ROOT / "exports"
@@ -94,6 +94,15 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_decisions_record ON decisions(record_id);
         CREATE INDEX IF NOT EXISTS idx_audit_record ON audit_events(record_id);
+        CREATE TABLE IF NOT EXISTS ai_screening (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, record_id INTEGER NOT NULL,
+            provider TEXT NOT NULL, run_label TEXT NOT NULL, ai_decision TEXT NOT NULL,
+            ai_category TEXT DEFAULT '', ai_confidence TEXT DEFAULT '', ai_reason TEXT DEFAULT '',
+            ai_exclusion_reason TEXT DEFAULT '', ai_missing_info TEXT DEFAULT '',
+            ai_full_text_needed TEXT DEFAULT '', imported_at TEXT NOT NULL,
+            UNIQUE(record_id, provider, run_label)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_screening_record ON ai_screening(record_id);
         """)
         # v1.0 auto-filled category from keywords. Preserve it as a suggestion,
         # not as a researcher-confirmed classification.
@@ -648,3 +657,87 @@ def export_word(path=None):
     )
     doc.save(path)
     return path
+
+AI_EXPORT_FIELDS = ["id", "title", "authors", "year", "doi", "abstract", "keywords",
+                    "document_type", "language", "full_text_available", "url"]
+AI_RESULT_FIELDS = ["id", "ai_decision", "ai_category", "ai_confidence", "ai_reason",
+                    "ai_exclusion_reason", "ai_missing_info", "ai_full_text_needed"]
+AI_PROMPT = """Ты помогаешь проводить предварительный скрининг публикаций для систематического обзора.
+Тема: рекуперация кинетической энергии автотранспортных средств посредством дорожной инфраструктуры и транспортного потока.
+Период: 2010–2026. Обычное рекуперативное торможение внутри автомобиля исключается, если оно не связано с дорожной инфраструктурой или транспортным потоком.
+Типология: T1 — пьезоэлектрические дорожные генераторы; T2 — электромеханические генераторы в полотне, лежачих полицейских и дорожных механизмах; T3 — аэродинамические установки от воздушного потока движущегося транспорта; T4 — иные механические дорожные преобразователи; T5 — комбинированные системы из двух и более принципов.
+Анализируй только предоставленные поля. Не выдумывай сведения. Если аннотации нет или данных недостаточно, выбирай maybe, а не исключай. Обзорные статьи по теме можно передавать на полный текст. Не утверждай, что полный текст проверен, если он не предоставлен.
+Положительное решение означает только передачу на проверку полного текста, а не окончательное включение в обзор.
+Верни строго CSV с разделителем ;, одной строкой на каждый id, без Markdown. Заголовки:
+id;ai_decision;ai_category;ai_confidence;ai_reason;ai_exclusion_reason;ai_missing_info;ai_full_text_needed
+ai_decision: advance_to_full_text, exclude_title_abstract, maybe
+ai_category: T1, T2, T3, T4, T5 или пусто
+ai_confidence: high, medium, low
+ai_full_text_needed: yes, no, unclear
+Сохрани id без изменений, не пропускай строки. В текстовых полях не используй ;.
+"""
+
+def export_ai_batches(batch_size=35):
+    import io, zipfile
+    batch_size = int(batch_size)
+    if not 1 <= batch_size <= 100:
+        raise ValueError("Размер пакета должен быть от 1 до 100.")
+    rows = records()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("ИНСТРУКЦИЯ_ДЛЯ_ИИ.txt", AI_PROMPT)
+        archive.writestr("README.txt", "Обрабатывайте CSV пакетами. Сохраните id и все строки. Импортируйте возвращённые CSV в SciLit Scout. Экспорт содержит аннотации; учитывайте политику конфиденциальности выбранного онлайн-сервиса.")
+        for start in range(0, len(rows), batch_size):
+            data = [{k: r.get(k, "") for k in AI_EXPORT_FIELDS} for r in rows[start:start+batch_size]]
+            frame = pd.DataFrame(data, columns=AI_EXPORT_FIELDS)
+            archive.writestr(f"batch_{start // batch_size + 1:03d}.csv",
+                             frame.to_csv(index=False, sep=";", lineterminator="\n").encode("utf-8-sig"))
+    return buffer.getvalue(), len(rows), (len(rows)+batch_size-1)//batch_size
+
+def import_ai_results(file_name, data, provider, run_label):
+    import io
+    provider, run_label = str(provider or "").strip(), str(run_label or "").strip()
+    if not provider or not run_label:
+        raise ValueError("Укажите ИИ/сервис и ярлык запуска.")
+    try:
+        frame = pd.read_csv(io.BytesIO(data), sep=None, engine="python", dtype=str, encoding="utf-8-sig").fillna("")
+    except Exception as exc:
+        raise ValueError(f"Не удалось прочитать CSV: {exc}") from exc
+    missing = [x for x in AI_RESULT_FIELDS if x not in frame.columns]
+    if missing:
+        raise ValueError("Нет обязательных столбцов: " + ", ".join(missing))
+    frame["id"] = frame["id"].astype(str).str.strip()
+    if frame["id"].eq("").any() or frame["id"].duplicated().any():
+        raise ValueError("Пустые или повторяющиеся id. Исправьте CSV.")
+    known = {str(r["id"]) for r in records()}
+    unknown = sorted(set(frame["id"]) - known)
+    if unknown:
+        raise ValueError("Неизвестные id: " + ", ".join(unknown[:20]))
+    decisions, categories = {"advance_to_full_text", "exclude_title_abstract", "maybe"}, {"", "T1", "T2", "T3", "T4", "T5"}
+    confidences, fulltexts = {"", "high", "medium", "low"}, {"", "yes", "no", "unclear"}
+    now, inserted, updated = now_utc(), 0, 0
+    with db() as con:
+        for row in frame.to_dict("records"):
+            d, cat = row["ai_decision"].strip().lower(), row["ai_category"].strip().upper()
+            conf, ft = row["ai_confidence"].strip().lower(), row["ai_full_text_needed"].strip().lower()
+            if d not in decisions or cat not in categories or conf not in confidences or ft not in fulltexts:
+                raise ValueError(f"Недопустимое значение в строке ID {row['id']}.")
+            rid = int(row["id"])
+            exists = con.execute("SELECT id FROM ai_screening WHERE record_id=? AND provider=? AND run_label=?", (rid, provider, run_label)).fetchone()
+            con.execute("""INSERT INTO ai_screening(record_id,provider,run_label,ai_decision,ai_category,ai_confidence,ai_reason,ai_exclusion_reason,ai_missing_info,ai_full_text_needed,imported_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(record_id,provider,run_label) DO UPDATE SET
+                ai_decision=excluded.ai_decision, ai_category=excluded.ai_category, ai_confidence=excluded.ai_confidence,
+                ai_reason=excluded.ai_reason, ai_exclusion_reason=excluded.ai_exclusion_reason,
+                ai_missing_info=excluded.ai_missing_info, ai_full_text_needed=excluded.ai_full_text_needed,
+                imported_at=excluded.imported_at""",
+                (rid, provider, run_label, d, cat, conf, row["ai_reason"], row["ai_exclusion_reason"],
+                 row["ai_missing_info"], ft, now))
+            if exists: updated += 1
+            else: inserted += 1
+            _audit(con, rid, "ai_screening_imported", {"provider": provider, "run_label": run_label, "decision": d, "file_name": file_name})
+    return len(frame), inserted, updated
+
+def ai_screening_results():
+    with db() as con:
+        return [dict(r) for r in con.execute("""SELECT a.*,r.title,r.year,r.doi FROM ai_screening a
+            JOIN records r ON r.id=a.record_id ORDER BY a.imported_at DESC,r.id""").fetchall()]
