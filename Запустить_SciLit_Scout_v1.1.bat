@@ -1,10 +1,10 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title Road Energy Review v1.1
+title SciLit Scout v1.1
 
 echo ==========================================
-echo   Road Energy Review v1.1
+echo   SciLit Scout v1.1
 echo ==========================================
 echo.
 
@@ -32,11 +32,11 @@ if errorlevel 1 (
 )
 
 echo.
-echo Starting Road Energy Review v1.1...
+echo Starting SciLit Scout v1.1...
 echo Keep this window open while using the application.
 echo Press Ctrl+C here to stop.
 echo.
 ".venv\Scripts\python.exe" -m streamlit run app.py
 echo.
-echo Road Energy Review has stopped.
+echo SciLit Scout has stopped.
 pause
