@@ -1,0 +1,18 @@
+# Стартовая матрица поисковых запросов. Перед основным поиском адаптировать и зафиксировать.
+period_start: "2010-01-01"
+languages: "all"
+queries:
+  broad:
+    - '"road energy harvesting"'
+    - '"roadway energy harvesting"'
+    - '"pavement energy harvesting"'
+  piezoelectric:
+    - '"piezoelectric pavement"'
+    - '"piezoelectric road energy harvesting"'
+  electromechanical:
+    - '"speed bump energy harvesting"'
+    - '"road electromechanical energy harvester"'
+  aerodynamic:
+    - '"traffic-induced wind energy harvesting"'
+  combined:
+    - '"hybrid road energy harvesting"'
