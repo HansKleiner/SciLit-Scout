@@ -3,7 +3,7 @@ import pandas as pd
 from pathlib import Path
 
 from scilit_scout.core import (
-    APP_VERSION, init_db, db, records, search_openalex, search_crossref,
+    APP_VERSION, init_db, db, records, search_openalex, search_crossref, search_openaire,
     import_file_bytes, decide, set_category, set_full_text, latest_decision,
     search_logs, export_excel, export_word, prisma_summary
 )
@@ -49,6 +49,37 @@ with tabs[0]:
                 st.success(f"Получено: {found} · новых: {inserted} · объединено/обогащено: {merged}")
             except Exception as exc:
                 st.error(f"Ошибка Crossref: {exc}")
+
+    st.divider()
+    st.subheader("OpenAIRE Graph — российские публикации")
+    st.caption("Поиск публикаций, у которых в OpenAIRE указана хотя бы одна российская аффилиация автора. Это не фильтр по языку или месту издания.")
+    with st.form("openaire_search_v120"):
+        query3 = st.text_input(
+            "Тематический запрос OpenAIRE",
+            "road energy harvesting OR piezoelectric pavement"
+        )
+        e1, e2, e3 = st.columns(3)
+        start3 = e1.text_input("С года", "2010", key="openaire_start_v120")
+        end3 = e2.text_input("По год", "", key="openaire_end_v120",
+                             help="Оставьте пустым, чтобы использовать текущий год.")
+        limit3 = e3.number_input("Максимум записей", 1, 2000, 100,
+                                 key="openaire_limit_v120")
+        mailto3 = st.text_input("Email для polite pool (необязательно)", "",
+                                key="openaire_mailto_v120")
+        if st.form_submit_button("Искать российские публикации в OpenAIRE"):
+            try:
+                with st.spinner("Поиск в OpenAIRE Graph..."):
+                    start_iso = f"{start3.strip()}-01-01" if len(start3.strip()) == 4 else start3.strip()
+                    end_value = (f"{end3.strip()}-12-31" if len(end3.strip()) == 4
+                                 else (end3.strip() or None))
+                    found, inserted, merged = search_openaire(
+                        query3, start_iso, end_value, int(limit3), mailto=mailto3
+                    )
+                st.success(
+                    f"Получено: {found} · новых: {inserted} · объединено/обогащено: {merged}"
+                )
+            except Exception as exc:
+                st.error(f"Ошибка OpenAIRE: {exc}")
 
     st.divider()
     st.subheader("Импорт библиографической выгрузки")
