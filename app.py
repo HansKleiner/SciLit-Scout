@@ -233,7 +233,7 @@ with tabs[7]:
             st.error(f"Ошибка Excel: {exc}")
     if "excel_bytes_v11" in st.session_state:
         st.download_button("Скачать Excel", st.session_state["excel_bytes_v11"],
-                           file_name="scilit_scout_v1.1.1.xlsx",
+                           file_name="scilit_scout_v1.2.0.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     st.divider()
     if st.button("Сформировать Word", key="make_word_v111"):
@@ -245,5 +245,5 @@ with tabs[7]:
             st.error(f"Ошибка Word: {exc}")
     if "word_bytes_v11" in st.session_state:
         st.download_button("Скачать Word", st.session_state["word_bytes_v11"],
-                           file_name="scilit_scout_report_v1.1.1.docx",
+                           file_name="scilit_scout_report_v1.2.0.docx",
                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
