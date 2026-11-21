@@ -231,17 +231,17 @@ with tabs[8]:
     )
     st.markdown("**1. Экспорт пакетов для ИИ**")
     batch_size = st.number_input("Записей в одном пакете", min_value=10, max_value=100, value=35, step=5)
-    if st.button("Подготовить ZIP с CSV и инструкцией", key="ai_export_zip"):
+    if st.button("Подготовить ZIP с CSV и инструкцией", key="make_ai_export_zip"):
         try:
             archive, total, batches = export_ai_batches(int(batch_size))
-            st.session_state["ai_export_zip"] = archive
+            st.session_state["ai_export_zip_bytes"] = archive
             st.session_state["ai_export_info"] = (total, batches)
         except Exception as exc:
             st.error(f"Ошибка экспорта: {exc}")
-    if "ai_export_zip" in st.session_state:
+    if "ai_export_zip_bytes" in st.session_state:
         total, batches = st.session_state["ai_export_info"]
         st.success(f"Подготовлено записей: {total} · CSV-пакетов: {batches}")
-        st.download_button("Скачать ZIP для ИИ", st.session_state["ai_export_zip"],
+        st.download_button("Скачать ZIP для ИИ", st.session_state["ai_export_zip_bytes"],
                            file_name="scilit_scout_ai_batches.zip", mime="application/zip")
     st.caption("В ZIP находится инструкция для модели и отдельные CSV-файлы. Сначала загрузите инструкцию в ИИ, затем обрабатывайте CSV по одному.")
     st.divider()
