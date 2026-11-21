@@ -13,7 +13,7 @@ from typing import Iterable
 import pandas as pd
 import requests
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
 EXPORTS = ROOT / "exports"
@@ -48,6 +48,7 @@ NEW_COLUMNS = {
     "records": {
         "publication_date": "TEXT",
         "openalex_id": "TEXT",
+        "openaire_id": "TEXT",
         "full_text_url": "TEXT",
         "full_text_checked_at": "TEXT",
         "suggested_category": "TEXT",
@@ -171,6 +172,7 @@ ALIASES = {
     "patent_number": ["patent_number", "publication number", "номер патента"],
     "thesis_institution": ["thesis_institution", "institution", "университет", "организация"],
     "openalex_id": ["openalex_id", "openalex id"],
+    "openaire_id": ["openaire_id", "openaire id"],
 }
 
 def normalize(row: dict, source: str) -> dict:
@@ -228,7 +230,7 @@ def import_rows(rows: Iterable[dict], source: str):
                 updates = {"sources": json.dumps(src, ensure_ascii=False)}
                 # Enrich absent bibliographic metadata; never overwrite researcher decisions.
                 for field in ("title", "authors", "year", "doi", "abstract", "url",
-                              "publication_date", "openalex_id", "language", "keywords",
+                              "publication_date", "openalex_id", "openaire_id", "language", "keywords",
                               "full_text_url", "patent_number", "thesis_institution"):
                     value = r.get(field)
                     if value not in (None, "") and old[field] in (None, ""):
@@ -251,14 +253,14 @@ def import_rows(rows: Iterable[dict], source: str):
                     fingerprint,title,authors,year,doi,abstract,url,source,sources,
                     document_type,full_text_available,language,keywords,patent_number,
                     thesis_institution,suggested_category,publication_date,openalex_id,
-                    full_text_url,created_at,updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    full_text_url,openaire_id,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 key, r["title"], r["authors"], r["year"], r["doi"], r["abstract"], r["url"],
                 source, json.dumps([source] if source else [], ensure_ascii=False),
                 r["document_type"], r["full_text_available"], r["language"], r["keywords"],
                 r["patent_number"], r["thesis_institution"], r["suggested_category"],
-                r["publication_date"], r["openalex_id"], r["full_text_url"], now_utc(), now_utc()
+                r["publication_date"], r["openalex_id"], r["full_text_url"], r["openaire_id"], now_utc(), now_utc()
             ))
             _audit(con, cur.lastrowid, "record_imported", {"source": source})
             inserted += 1
@@ -365,6 +367,128 @@ def search_openalex(query, start="2010-01-01", end=None, limit=100, email="", ap
     inserted, merged = import_rows(found, "OpenAlex")
     log_search("OpenAlex", query, f"from={start};to={end};limit={limit}",
                len(found), notes="API metadata search", inserted=inserted, merged=merged)
+    return len(found), inserted, merged
+
+
+def _request_openaire_json(url, params, retries=4):
+    """GET OpenAIRE Graph JSON with bounded retries and polite rate-limit handling."""
+    headers = {"User-Agent": f"SciLitScout/{APP_VERSION} (literature discovery)"}
+    for attempt in range(retries + 1):
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=(10, 60))
+        except requests.RequestException:
+            if attempt >= retries:
+                raise
+            time.sleep(min(2 ** attempt, 20))
+            continue
+        if response.status_code == 429 or response.status_code in (500, 502, 503, 504):
+            if attempt >= retries:
+                raise RuntimeError(
+                    f"OpenAIRE временно недоступен (HTTP {response.status_code}); "
+                    "число повторных попыток исчерпано."
+                )
+            retry_after = response.headers.get("Retry-After", "")
+            try:
+                wait = float(retry_after)
+            except (TypeError, ValueError):
+                wait = min(2 ** attempt, 20)
+            time.sleep(max(1, min(wait, 60)))
+            continue
+        if response.status_code >= 400:
+            detail = response.text[:500]
+            raise RuntimeError(f"OpenAIRE Graph вернул HTTP {response.status_code}: {detail}")
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise RuntimeError("OpenAIRE вернул ответ, который не является JSON.") from exc
+    raise RuntimeError("Не удалось получить ответ OpenAIRE Graph.")
+
+
+def _openaire_record(item):
+    """Map an OpenAIRE Graph research product to SciLit Scout's import schema."""
+    authors = [
+        author.get("fullName", "")
+        for author in (item.get("authors") or [])
+        if isinstance(author, dict) and author.get("fullName")
+    ]
+    pids = item.get("pids") or []
+    doi = next(
+        (pid.get("value", "") for pid in pids
+         if isinstance(pid, dict) and str(pid.get("scheme", "")).lower() == "doi"),
+        ""
+    )
+    descriptions = item.get("descriptions") or []
+    abstract = next((str(value).strip() for value in descriptions if value), "")
+    instances = item.get("instances") or []
+    urls = []
+    for instance in instances:
+        if isinstance(instance, dict):
+            urls.extend(instance.get("urls") or [])
+    language = item.get("language") or {}
+    if isinstance(language, dict):
+        language = language.get("label") or language.get("code") or ""
+    subjects = item.get("subjects") or []
+    keywords = []
+    for subject in subjects:
+        if isinstance(subject, dict):
+            value = (subject.get("subject") or {}).get("value")
+            if value:
+                keywords.append(value)
+    publication_date = item.get("publicationDate") or ""
+    return {
+        "title": item.get("mainTitle") or "",
+        "authors": "; ".join(authors),
+        "year": parse_year(publication_date),
+        "publication_date": publication_date,
+        "doi": doi,
+        "abstract": abstract,
+        "url": (urls[0] if urls else (f"https://doi.org/{doi}" if doi else "")),
+        "language": language,
+        "keywords": "; ".join(keywords),
+        "openaire_id": item.get("id") or "",
+    }
+
+
+def search_openaire(query, start="2010-01-01", end=None, limit=100, mailto=""):
+    """Search OpenAIRE Graph for publications with at least one Russian affiliation."""
+    if not query or not query.strip():
+        raise ValueError("Введите поисковый запрос OpenAIRE.")
+    start_year = parse_year(start)
+    end_year = parse_year(end or date.today().isoformat())
+    if not start_year or not end_year or start_year > end_year:
+        raise ValueError("Проверьте начальный и конечный год поиска.")
+    limit = max(1, min(int(limit), 2000))
+    url = "https://api.openaire.eu/graph/v4/research-products"
+    found, page = [], 1
+    while len(found) < limit:
+        page_size = min(100, limit - len(found))
+        params = {
+            "search": query.strip(),
+            "filter": (
+                f"type:publication,authorships.countries:RU,"
+                f"from_publication_year:{start_year},to_publication_year:{end_year}"
+            ),
+            "page": page,
+            "page_size": page_size,
+        }
+        if mailto and mailto.strip():
+            params["mailto"] = mailto.strip()
+        payload = _request_openaire_json(url, params)
+        items = payload.get("results") or []
+        if not items:
+            break
+        found.extend(_openaire_record(item) for item in items)
+        if len(items) < page_size:
+            break
+        page += 1
+        time.sleep(0.2)
+    inserted, merged = import_rows(found, "OpenAIRE")
+    log_search(
+        "OpenAIRE", query,
+        f"country=RU;from={start_year};to={end_year};limit={limit}",
+        len(found), notes="OpenAIRE Graph API v4; publications with Russian author affiliations",
+        inserted=inserted, merged=merged
+    )
     return len(found), inserted, merged
 
 def _crossref_year(item):
